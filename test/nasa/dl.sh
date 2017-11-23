@@ -1,0 +1,2 @@
+gdal_translate -of GTiff -outsize 1200 1000 -projwin 11 52 12 51 '<GDAL_WMS><Service name="TiledWMS"><ServerUrl>https://gibs.earthdata.nasa.gov/twms/epsg4326/best/twms.cgi?</ServerUrl><TiledGroupName>MODIS AQUA tileset</TiledGroupName><Change key="${time}">2013-08-21</Change></Service></GDAL_WMS>' GreatPlainsSmoke2.tif
+gdal_translate -of JPEG GreatPlainsSmoke2.tif GreatPlainsSmoke2.jpg
