@@ -28,6 +28,27 @@ import subprocess
 def now():
     return time.time()
 
+class Tile():
+    def __init__(self):
+        self.path = ""
+        self.xtile = 0
+        self.ytile = 0
+        self.zoom = 0
+        self.sceneX = 0
+        self.sceneY = 0
+        self.mapX = 0
+        self.mapY = 0
+        self.width = 256
+        self.height = 256
+        
+    def sceneBBox(self):
+        return (self.sceneX, self.sceneY, self.sceneX+self.width, self.sceneY+self.height)
+    
+    def mapBBox(self):
+        pass
+    
+    
+    
 class TileSource():
     
     SRC_NAME = "osm_a"
@@ -36,17 +57,24 @@ class TileSource():
     def __init__(self, cachedir, download_delay=1):
         self.cachedir = cachedir
         self.download_delay = download_delay
+        self.src_name_args = None
         self.tile_path = None
         self.tiles = []
+        self.coordsBBox = None  #(lon1, lat1, lon2, lat2) 
+        self.tilesBBox = None   #(xtile1, ytile1, xtile2, ytile2) 
         self.last_download = time.time() 
-        self.tile_width = 256
-        self.tile_heith = 256
+        self.tileWidth = 256
+        self.tileHeight = 256
         
     def getTileUrl(self, tilex, tiley, zoom):
         return self.TILE_URL.format(x=tilex, y=tiley, z=zoom)
     
     def getTilePath(self, tilex, tiley, zoom):
-        tile_dir = os.path.join(self.cachedir, self.SRC_NAME, str(zoom), str(tilex))
+        if self.src_name_args:
+            src_name = self.SRC_NAME.format(**self.src_name_args)
+        else:
+            src_name = self.SRC_NAME
+        tile_dir = os.path.join(self.cachedir, src_name, str(zoom), str(tilex))
         tile_fn = str(tiley)+".png"
         tile_path = os.path.join(tile_dir, tile_fn)
         return (tile_dir, tile_fn, tile_path)
@@ -106,40 +134,49 @@ class TileSource():
         nw = np.ceil(w1/tw - btxr)
         #print("nn=%r, ne=%r, ns=%r, nw=%r" % (nn, ne, ns, nw))
         # tiles bbox
-        tiles_bbox = (btx-nw, bty-nn, btx+ne, bty+ns)
-        tiles_bbox = [int(x) for x in smopy.correct_box(box=tiles_bbox, z=zoom)]
-        #print("tiles_bbox", tiles_bbox)
+        self.tilesBBox = (btx-nw, bty-nn, btx+ne, bty+ns)
+        self.tilesBBox = tuple([int(x) for x in smopy.correct_box(box=self.tilesBBox, z=zoom)])
         # coords bbox
-        coords_bbox = (*smopy.num2deg(xtile=tiles_bbox[0], ytile=tiles_bbox[1], zoom=zoom),
-                       *smopy.num2deg(xtile=tiles_bbox[2]+1, ytile=tiles_bbox[3]+1, zoom=zoom))
-        #viewport upper-left
-        
-        #insert upper-left
-                
+        (lat1, lon1) = smopy.num2deg(xtile=self.tilesBBox[0], ytile=self.tilesBBox[1], zoom=zoom)
+        (lat2, lon2) = smopy.num2deg(xtile=self.tilesBBox[2]+1, ytile=self.tilesBBox[3]+1, zoom=zoom)
+        self.coordsBBox = (lon1, lat1, lon2, lat2)
         # provide tiles
         self.tiles = []
         ix = 0
-        for tilex in range(tiles_bbox[0], tiles_bbox[2]+1):
+        for xtile in range(self.tilesBBox[0], self.tilesBBox[2]+1):
             tilesrow = []
             iy = 0
-            for tiley in range(tiles_bbox[1], tiles_bbox[3]+1):
-                tile_path = self.provideTile(tilex, tiley, zoom)
-                tile_x = ix * tw
-                tile_y = iy * th
-                tilesrow.append((tile_path, tile_x, tile_y, tilex, tiley))
+            for ytile in range(self.tilesBBox[1], self.tilesBBox[3]+1):
+                lat, lon = smopy.num2deg(xtile, ytile, zoom)
+                #
+                tile = Tile()
+                tile.path   = self.provideTile(xtile, ytile, zoom)
+                tile.xtile  = xtile
+                tile.ytile  = ytile
+                tile.zoom   = zoom
+                tile.sceneX = ix * tw
+                tile.sceneY = iy * th
+                tile.mapX   = lon
+                tile.mapY   = lat
+                #  
+                tilesrow.append(tile)
                 iy += 1
             self.tiles.append(tilesrow)
             ix += 1
+        self.upperLeftTile = self.tiles[0][0]
         
     def pixelToCoord(self, pixel_x, pixel_y, zoom):
-        ultile = self.tiles[0][0]
-        xtilef = ultile[3] + pixel_x / self.tile_width  
-        ytilef = ultile[4] + pixel_y / self.tile_heith
+        xtilef = self.upperLeftTile.xtile + pixel_x / self.tileWidth  
+        ytilef = self.upperLeftTile.ytile + pixel_y / self.tileHeight
         (lat, lon) = smopy.num2deg(xtilef, ytilef, zoom)
         return (lon, lat)
     
     def coordToPixel(self, lon, lat, zoom):
-        pass
+        (xtilef, ytilef) = smopy.deg2num(latitude=lat, longitude=lon, zoom=zoom, do_round=False)
+        x = (xtilef - self.upperLeftTile.xtile) * self.tileWidth
+        y = (ytilef - self.upperLeftTile.ytile) * self.tileHeight
+        return (x, y)
+        
     
     
         
@@ -165,11 +202,24 @@ class NASAEarthdataSource(TileSource):
     
     def downloadTile(self, tilex, tiley, zoom):
         pass
-        #cmd = ["gdal_translate", "-of", "GTiff", "-outsize", str(self.tile_width), 
-        #       str(self.tile_height), "-projwin", -105 42 -93 32 '<GDAL_WMS><Service name="TMS"><ServerUrl>https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/MODIS_Aqua_CorrectedReflectance_TrueColor/default/2013-08-21/250m/${z}/${y}/${x}.jpg</ServerUrl></Service><DataWindow><UpperLeftX>-180.0</UpperLeftX><UpperLeftY>90</UpperLeftY><LowerRightX>396.0</LowerRightX><LowerRightY>-198</LowerRightY><TileLevel>8</TileLevel><TileCountX>2</TileCountX><TileCountY>1</TileCountY><YOrigin>top</YOrigin></DataWindow><Projection>EPSG:4326</Projection><BlockSizeX>512</BlockSizeX><BlockSizeY>512</BlockSizeY><BandsCount>3</BandsCount></GDAL_WMS>' GreatPlainsSmoke2.tif
+        #cmd = ["gdal_translate", "-of", "GTiff", "-outsize", str(self.tileWidth), 
+        #       str(self.tileHeight), "-projwin", -105 42 -93 32 '<GDAL_WMS><Service name="TMS"><ServerUrl>https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/MODIS_Aqua_CorrectedReflectance_TrueColor/default/2013-08-21/250m/${z}/${y}/${x}.jpg</ServerUrl></Service><DataWindow><UpperLeftX>-180.0</UpperLeftX><UpperLeftY>90</UpperLeftY><LowerRightX>396.0</LowerRightX><LowerRightY>-198</LowerRightY><TileLevel>8</TileLevel><TileCountX>2</TileCountX><TileCountY>1</TileCountY><YOrigin>top</YOrigin></DataWindow><Projection>EPSG:4326</Projection><BlockSizeX>512</BlockSizeX><BlockSizeY>512</BlockSizeY><BandsCount>3</BandsCount></GDAL_WMS>' GreatPlainsSmoke2.tif
         
         #gdal_translate -of JPEG GreatPlainsSmoke2.tif GreatPlainsSmoke2.jpg"""
         
+class GoogleMapsSource(TileSource):
+    SRC_NAME = "google-{maptype}"
+    TILE_URL = "https://maps.googleapis.com/maps/api/staticmap?center={lat},{lon}&zoom={zoom}&maptype={maptype}&size=256x256&key={key}"
+    
+    def __init__(self, cachedir, maptype, api_key, download_delay=1):
+        TileSource.__init__(self, cachedir=cachedir, download_delay=download_delay)
+        self.maptype = maptype
+        self.api_key = api_key
+        self.src_name_args = dict(maptype=maptype)
+        
+    def getTileUrl(self, tilex, tiley, zoom):
+        lat, lon = smopy.num2deg(tilex+0.5, tiley+0.5, zoom)
+        return self.TILE_URL.format(lon=lon, lat=lat, zoom=zoom, maptype=self.maptype, key=self.api_key)
         
               
 # test

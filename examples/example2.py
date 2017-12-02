@@ -28,7 +28,7 @@ class MainWindow(QMainWindow):
         add_menu(self, "View", [("Fullscreen", lambda: self.showFullScreen()),
                                 ("Maximized", lambda: self.showMaximized())])
         
-        self.tilesource = OSMTileSourceA(cachedir="./cache", download_delay=1.1)
+        self.tilesource = OSMTileSourceA(cachedir="../cache", download_delay=1.1)
         #self.tilesource = StamenTonerTileSource(cachedir="./cache", download_delay=1.1)
         
         self.ogrmap = OGRMap()

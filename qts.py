@@ -7,7 +7,7 @@
 @license: BSD
 '''
 
-from pylib3.qt5.shortcuts import vbox_layout, add_menu
+from pylib3.qt5.shortcuts import hbox_layout, vbox_layout, add_menu
 
 
 # test

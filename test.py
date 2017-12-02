@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow
 from PyQt5.Qt import QWidget, QGraphicsView, QGraphicsScene, QGraphicsItem,\
     QMouseEvent, QGraphicsSceneMouseEvent, QPoint, QFileDialog, QInputDialog,\
     QMessageBox, QRectF, QPen, QCursor, QGraphicsItemGroup, QGraphicsEllipseItem,\
-    QGraphicsTextItem, QGraphicsSimpleTextItem, QPainter
+    QGraphicsTextItem, QGraphicsSimpleTextItem, QPainter, QRect
 
 import pylib3.qt5.shortcuts as qts
 from pylib3.qt5.drawstyles import PEN_STYLE
@@ -109,11 +109,12 @@ class FeatureStore():
             
 ###
   
-class qtGraphicsFeature(QGraphicsItem):
+class qtFeature(QGraphicsItem):
     
     def __init__(self, feature):
         QGraphicsItem.__init__(self)
         self._feature = feature
+        self._boundingrect = QRectF(0,0,0,0)
     
     def addPoint(self, scene_pos):
         self._feature.addPoint((scene_pos.x(), scene_pos.y()))
@@ -125,7 +126,7 @@ class qtGraphicsFeature(QGraphicsItem):
         self._feature.finishGeometry()
         
     def onCreateMousePress(self, scene_pos, event:QMouseEvent):
-        print("qtGraphicsFeature.onCreateMousePress()")
+        print("qtFeature.onCreateMousePress()")
         button = event.button()
         if button == Qt.LeftButton:
             self.addPoint(scene_pos)
@@ -138,29 +139,33 @@ class qtGraphicsFeature(QGraphicsItem):
         #self.update()
     
     def onCreateMouseRelease(self, scene_pos, event:QMouseEvent):
-        #print("qtGraphicsFeature.onCreateMouseRelease()")
+        #print("qtFeature.onCreateMouseRelease()")
         pass
     
     def onCreateMouseMove(self, scene_pos, event:QMouseEvent):
-        #print("qtGraphicsFeature.onCreateMouseMove()")
+        #print("qtFeature.onCreateMouseMove()")
         pass
     
 
-class qtPointFeature(qtGraphicsFeature):
+class qtPointFeature(qtFeature):
     FTYPE = "point"
     
     def paint(self, painter:QPainter, *args, **kwargs):
-        print("qtPointFeature.paint()")
-        painter.drawEllipse(0,0,5,5)
-        painter.drawText(10,10,str(self._feature.fid))
+        print("qtPointFeature.paint()", self._feature.fid)
+        d = 10
+        r = 0.5 * d 
+        point_rect = QRectF(-r, -r, d, d)
+        painter.drawEllipse(point_rect)
+        text_rect = painter.drawText(QRectF(d,-r,d+100,-r+50), Qt.AlignLeft | Qt.AlignTop, str(self._feature.fid))
+        self._boundingrect = point_rect | text_rect
         
     def boundingRect(self, *args, **kwargs):
-        return QRectF(0, 0, 50, 50)
+        return self._boundingrect
     
-class qtLineFeature(qtGraphicsFeature):
+class qtLineFeature(qtFeature):
     FTYPE = "line"
     
-class qtPolygonFeature(qtGraphicsFeature):
+class qtPolygonFeature(qtFeature):
     FTYPE = "polygon"
 
 QTFEATURES = [qtPointFeature, qtLineFeature, qtPolygonFeature]
@@ -245,6 +250,8 @@ class qtDrawingView(QGraphicsView):
     def redraw(self):
         print("qtDrawingView.redraw()")
         scene = self.scene()
+        for item in scene.items():
+            scene.removeItem(item)
         scene.clear()
         if self.gridOn:
             self.drawGrid()
@@ -256,9 +263,9 @@ class qtDrawingView(QGraphicsView):
             print("#1", self.qtfeature.scene())
             scene.addItem(self.qtfeature)
     
-    #def update(self, *args, **kwargs):
-    #    self.redraw()
-        #return QGraphicsView.update(self, *args, **kwargs)
+    def update(self, *args, **kwargs):
+        QGraphicsView.update(self, *args, **kwargs)
+        self.redraw()
     
     def panXY(self, dx, dy):
         x = self.horizontalScrollBar().value()
@@ -409,7 +416,7 @@ class MainWindow(QMainWindow):
         qts.add_menu(self, "View", [("Fullscreen", lambda: self.showFullScreen()),
                                     ("Maximized", lambda: self.showMaximized())])
         self.featurestore = FeatureStore()
-        self.featurestore.randomCreatePoints(rect=[0,0,1500,1500], n=10)
+        self.featurestore.randomCreatePoints(rect=[0,0,1500,1500], n=5)
         self.drawingboard = qtDrawingBoard(api=self.api, featurestore=self.featurestore)
         self.setCentralWidget(self.drawingboard)
         
