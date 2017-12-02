@@ -21,6 +21,7 @@ MAPTYPES = ["roadmap", "satellite", "hybrid", "terrain"]
 
 
 def bbox2mapargs(lon1, lat1, lon2, lat2, width=256, height=256):
+    #not yet implemented
     lon = (lon1+lon2)/2
     lat = (lat1+lat2)/2
     height = (lat2-lat1)/(lon2-lon1) * width
@@ -46,37 +47,33 @@ def mapargs2bbox(lon, lat, zoom, width, height):
     lat2 = (2*math.atan(math.exp((oy - sy) / pplr)) - math.pi/2)*(180/math.pi)
     return (lon1, lat1, lon2, lat2)
 
-def download_map(basedir, lon, lat, zoom, maptype="satellite", width=256, height=256):
+def download_map(path, lon, lat, zoom, maptype="satellite", width=256, height=256):
     url_template = "https://maps.googleapis.com/maps/api/staticmap?center={lat},{lon}&zoom={zoom}&maptype={maptype}&size={width}x{height}&key={key}"
     url = url_template.format(lon=lon, lat=lat, zoom=zoom, maptype=maptype, width=width, height=height, key=GOOGLE_API_KEY)
-    path = os.path.join(basedir, "test.png")
     urlretrieve(url, path)
     return path
-     
      
 
 # test
 
 def test1():
-    path = download_map(basedir=".", lon=10.5, lat=50, zoom=18, maptype="hybrid")
+    path = download_map(path="./test1.png", lon=10.5, lat=50, zoom=18, maptype="hybrid")
     subprocess.call(["xdg-open", path])
 
 def test2():
     bbox = mapargs2bbox(lon=10.5, lat=50, zoom=18, width=256, height=256)
     print(bbox)
     #(10.49931335449219, 50.000441365198704, 10.500686645507814, 49.99955863074936)
-    #10.498809814453125 50.0006777572 10.50018310546875 49.9997950271
-
+    
 def test3():
     mapargs = bbox2mapargs(10.4,49.9,10.6,50.1)
-    path = download_map(basedir=".", maptype="hybrid", **mapargs)
+    path = download_map(path="./test3.png", maptype="hybrid", **mapargs)
     subprocess.call(["xdg-open", path])
     
 def test():
     test1()
     #test2()
     #test3()
-    
     
 if __name__ == "__main__":
     test()

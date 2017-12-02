@@ -110,9 +110,8 @@ def list_drivernames():
 
 ### test
 
-CFG1 = "/home/uzanto/git/bitbucket/pgrid/pgmod/cfg/substation.cfg"
-
 def test1():
+    #data has been removed
     m = OGRMap()
     m.addDataSource(ds_name="capitals_shp", driver_name="ESRI Shapefile", 
                     conn_str="examples/data/vector/CNTR_2014_60M_SH/Data/CNTR_CAPT_PT_2014.shp",
