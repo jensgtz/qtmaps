@@ -14,6 +14,9 @@ https://wiki.earthdata.nasa.gov/display/GIBS/Map+Library+Usage#expand-GDALBasics
 https://wiki.earthdata.nasa.gov/display/GIBS/GIBS+Available+Imagery+Products#expand-CorrectedReflectance16Products
 '''
 
+from collections import namedtuple
+from threading import Thread
+
 import smopy
 import time
 import os
@@ -47,25 +50,45 @@ class Tile():
     def mapBBox(self):
         pass
     
+ 
+TileSet = namedtuple("TileSet", ["lon","lat","zoom","w1","w2","h1","h2","tiles","tilesBBox","coordsBBox","upperLeftTile"])
+
+class ViewRequest():
+    def __init__(self, coord, zoom, wait, requestID, tileSetID, created, displayed):
+        self.coord = coord
+        self.zoom = zoom
+        self.wait = wait
+        self.requestID  = requestID
+        self.tileSetID  = tileSetID
+        self.created    = created
+        self.displayed  = displayed
+        self.timeout    = 15
+    def __str__(self):
+        args = (self.coord, self.zoom, self.wait, self.requestID, self.tileSetID, self.displayed)
+        return "ViewRequest(coord=%r, zoom=%r, wait=%r, requestID=%r, tileSetID=%r, displayed=%r)" % args
     
-    
+        
+        
 class TileSource():
     
     SRC_NAME = "osm_a"
     TILE_URL = "http://a.tile.openstreetmap.org/{z}/{x}/{y}.png"
     
-    def __init__(self, cachedir, download_delay=1):
+    def __init__(self, name, cachedir, download_delay=1):
+        self.name = name
         self.cachedir = cachedir
         self.download_delay = download_delay
         self.src_name_args = None
-        self.tile_path = None
-        self.tiles = []
-        self.coordsBBox = None  #(lon1, lat1, lon2, lat2) 
-        self.tilesBBox = None   #(xtile1, ytile1, xtile2, ytile2) 
-        self.last_download = time.time() 
+        self.last_download = time.time()
+        self.tileSets = []
+        self.tileSetID = None 
         self.tileWidth = 256
         self.tileHeight = 256
+        self.requestsCount = 0
         
+    def getName(self):
+        return self.name
+    
     def getTileUrl(self, tilex, tiley, zoom):
         return self.TILE_URL.format(x=tilex, y=tiley, z=zoom)
     
@@ -92,6 +115,7 @@ class TileSource():
             time.sleep(self.download_delay - time_left) 
         #
         try:
+            print("... from %r" % url)
             urlretrieve(url, tile_path)
             ret = tile_path
         except (URLError, HTTPError) as e:
@@ -115,8 +139,22 @@ class TileSource():
         (x, y) = smopy.deg2num(lat, lon, zoom, do_round=True)
         return self.provideTile(x, y, zoom)
     
-    def loadTiles(self, lon, lat, zoom, w1, w2, h1, h2):
-        print("loadTiles(lon=%r, lat=%r, zoom=%r, w1=%r, w2=%r, h1=%r, h2=%r)" % (lon, lat, zoom, w1, w2, h1, h2))
+    def getTilesBBox(self, lon, lat, zoom, w1, w2, h1, h2):
+        pass
+
+    def addTileSet(self, tileset:TileSet) -> int:
+        self.tileSets.append(tileset)
+        return len(self.tileSets)-1
+    
+    def setActiveTileSet(self, tilesetid:int):
+        assert tilesetid in range(len(self.tileSets))
+        self.tileSetID = tilesetid
+        
+    def getActiveTileSet(self) -> TileSet:
+        return self.tileSets[self.tileSetID]
+    
+    def _loadTiles(self, lon, lat, zoom, w1, w2, h1, h2):
+        """ returns TilesSet """
         # tile width and height
         tw = 256
         th = 256
@@ -134,19 +172,19 @@ class TileSource():
         nw = np.ceil(w1/tw - btxr)
         #print("nn=%r, ne=%r, ns=%r, nw=%r" % (nn, ne, ns, nw))
         # tiles bbox
-        self.tilesBBox = (btx-nw, bty-nn, btx+ne, bty+ns)
-        self.tilesBBox = tuple([int(x) for x in smopy.correct_box(box=self.tilesBBox, z=zoom)])
+        tilesBBox = (btx-nw, bty-nn, btx+ne, bty+ns)
+        tilesBBox = tuple([int(x) for x in smopy.correct_box(box=tilesBBox, z=zoom)])
         # coords bbox
-        (lat1, lon1) = smopy.num2deg(xtile=self.tilesBBox[0], ytile=self.tilesBBox[1], zoom=zoom)
-        (lat2, lon2) = smopy.num2deg(xtile=self.tilesBBox[2]+1, ytile=self.tilesBBox[3]+1, zoom=zoom)
-        self.coordsBBox = (lon1, lat1, lon2, lat2)
+        (lat1, lon1) = smopy.num2deg(xtile=tilesBBox[0], ytile=tilesBBox[1], zoom=zoom)
+        (lat2, lon2) = smopy.num2deg(xtile=tilesBBox[2]+1, ytile=tilesBBox[3]+1, zoom=zoom)
+        coordsBBox = (lon1, lat1, lon2, lat2)
         # provide tiles
-        self.tiles = []
+        tiles = []
         ix = 0
-        for xtile in range(self.tilesBBox[0], self.tilesBBox[2]+1):
+        for xtile in range(tilesBBox[0], tilesBBox[2]+1):
             tilesrow = []
             iy = 0
-            for ytile in range(self.tilesBBox[1], self.tilesBBox[3]+1):
+            for ytile in range(tilesBBox[1], tilesBBox[3]+1):
                 lat, lon = smopy.num2deg(xtile, ytile, zoom)
                 #
                 tile = Tile()
@@ -161,20 +199,51 @@ class TileSource():
                 #  
                 tilesrow.append(tile)
                 iy += 1
-            self.tiles.append(tilesrow)
+            tiles.append(tilesrow)
             ix += 1
-        self.upperLeftTile = self.tiles[0][0]
+        upperLeftTile = tiles[0][0]
+        tileSet = TileSet(lon, lat, zoom, w1, w2, h1, h2, tiles, tilesBBox, coordsBBox, upperLeftTile)
+        return tileSet
+    
+    def createRequestID(self):
+        self.requestsCount += 1
+        return self.requestsCount
+    
+    def _requestTilesRun(self, requestID, args, callback):
+        tileset = self._loadTiles(*args)
+        tileSetID = self.addTileSet(tileset)
+        callback(requestID, tileSetID)
+    
+    def requestTiles(self, lon, lat, zoom, w1, w2, h1, h2, callback):
+        """ loads tiles in background thread 
+            when finished callback is executed with args requestID, tileSetID 
+        """
+        requestID = self.createRequestID()
+        args = (lon, lat, zoom, w1, w2, h1, h2)
+        thread = Thread(target=self._requestTilesRun, args=(requestID, args, callback))
+        thread.daemon = True
+        thread.start()
+        return requestID
+    
+    def loadTiles(self, lon, lat, zoom, w1, w2, h1, h2):
+        """ loads tiles immediately """
+        print("loadTiles(lon=%r, lat=%r, zoom=%r, w1=%r, w2=%r, h1=%r, h2=%r)" % (lon, lat, zoom, w1, w2, h1, h2))
+        tileSet = self._loadTiles(lon, lat, zoom, w1, w2, h1, h2)
+        tileSetID = self.addTileSet(tileSet)
+        self.setActiveTileSet(tileSetID)
         
     def pixelToCoord(self, pixel_x, pixel_y, zoom):
-        xtilef = self.upperLeftTile.xtile + pixel_x / self.tileWidth  
-        ytilef = self.upperLeftTile.ytile + pixel_y / self.tileHeight
+        tileSet = self.getActiveTileSet() 
+        xtilef = tileSet.upperLeftTile.xtile + pixel_x / self.tileWidth  
+        ytilef = tileSet.upperLeftTile.ytile + pixel_y / self.tileHeight
         (lat, lon) = smopy.num2deg(xtilef, ytilef, zoom)
         return (lon, lat)
     
     def coordToPixel(self, lon, lat, zoom):
+        tileSet = self.getActiveTileSet()
         (xtilef, ytilef) = smopy.deg2num(latitude=lat, longitude=lon, zoom=zoom, do_round=False)
-        x = (xtilef - self.upperLeftTile.xtile) * self.tileWidth
-        y = (ytilef - self.upperLeftTile.ytile) * self.tileHeight
+        x = (xtilef - tileSet.upperLeftTile.xtile) * self.tileWidth
+        y = (ytilef - tileSet.upperLeftTile.ytile) * self.tileHeight
         return (x, y)
         
     
@@ -206,13 +275,31 @@ class NASAEarthdataSource(TileSource):
         #       str(self.tileHeight), "-projwin", -105 42 -93 32 '<GDAL_WMS><Service name="TMS"><ServerUrl>https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/MODIS_Aqua_CorrectedReflectance_TrueColor/default/2013-08-21/250m/${z}/${y}/${x}.jpg</ServerUrl></Service><DataWindow><UpperLeftX>-180.0</UpperLeftX><UpperLeftY>90</UpperLeftY><LowerRightX>396.0</LowerRightX><LowerRightY>-198</LowerRightY><TileLevel>8</TileLevel><TileCountX>2</TileCountX><TileCountY>1</TileCountY><YOrigin>top</YOrigin></DataWindow><Projection>EPSG:4326</Projection><BlockSizeX>512</BlockSizeX><BlockSizeY>512</BlockSizeY><BandsCount>3</BandsCount></GDAL_WMS>' GreatPlainsSmoke2.tif
         
         #gdal_translate -of JPEG GreatPlainsSmoke2.tif GreatPlainsSmoke2.jpg"""
+
+
+class OSMTileSource(TileSource):
+    SRC_NAME    = "osm"
+    TILE_URL    = "http://{subdomain}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+    SUBDOMAINS  = ["a","b","c"]
+    
+    def __init__(self, name, cachedir, download_delay=0.33):
+        TileSource.__init__(self, name=name, cachedir=cachedir, download_delay=download_delay)
+        self.subdomainIndex = 0
+    
+    def getTileUrl(self, tilex, tiley, zoom):
+        self.subdomainIndex += 1
+        if self.subdomainIndex >= len(self.SUBDOMAINS):
+            self.subdomainIndex = 0
+        subdomain = self.SUBDOMAINS[self.subdomainIndex]
+        return self.TILE_URL.format(subdomain=subdomain, x=tilex, y=tiley, z=zoom)
+        
         
 class GoogleMapsSource(TileSource):
     SRC_NAME = "google-{maptype}"
     TILE_URL = "https://maps.googleapis.com/maps/api/staticmap?center={lat},{lon}&zoom={zoom}&maptype={maptype}&size=256x256&key={key}"
     
-    def __init__(self, cachedir, maptype, api_key, download_delay=1):
-        TileSource.__init__(self, cachedir=cachedir, download_delay=download_delay)
+    def __init__(self, name, cachedir, maptype, api_key, download_delay=1):
+        TileSource.__init__(self, name=name, cachedir=cachedir, download_delay=download_delay)
         self.maptype = maptype
         self.api_key = api_key
         self.src_name_args = dict(maptype=maptype)
@@ -221,7 +308,8 @@ class GoogleMapsSource(TileSource):
         lat, lon = smopy.num2deg(tilex+0.5, tiley+0.5, zoom)
         return self.TILE_URL.format(lon=lon, lat=lat, zoom=zoom, maptype=self.maptype, key=self.api_key)
         
-              
+        
+
 # test
 
 def test():

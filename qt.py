@@ -7,13 +7,15 @@
 @license: BSD
 '''
 
+import time
+from collections import namedtuple, OrderedDict
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.Qt import QWidget, QGraphicsView, QGraphicsScene, QPixmap,\
     QWheelEvent, QPainter, QEvent, QMouseEvent, QGraphicsSceneMouseEvent, QRectF,\
-    QCursor
+    QCursor, QThread, QTimer
 
-from qtmaps.wms import TileSource
+from qtmaps.wms import TileSource, ViewRequest
 from qtmaps.qts import vbox_layout, hbox_layout
 
 
@@ -68,7 +70,7 @@ class qtMapView(QGraphicsView):
         self.horizontalScrollBar().setValue(x)
         y = self.verticalScrollBar().value() + dy
         self.verticalScrollBar().setValue(y)
-        print("changeScrollbars(dx=%r, dy=%r): x=%r y=%r" % (dx, dy, x, y))
+        #print("changeScrollbars(dx=%r, dy=%r): x=%r y=%r" % (dx, dy, x, y))
         
     def panXY(self, dx, dy):
         self.changeScrollbars(dx, dy)
@@ -189,7 +191,8 @@ class qtWMSView(qtMapView):
         self.resetScrollbars()
         scene = self.scene()
         scene.clear()
-        for row in self.tilesource.tiles:
+        tileSet = self.tilesource.getActiveTileSet()
+        for row in tileSet.tiles:
             for tile in row:
                 if tile.path is None: 
                     continue
@@ -205,18 +208,21 @@ class qtWMSView(qtMapView):
         #self.redrawMap()
         self.centerMap(coord=self.mapPos, zoom=self.mapZoom)
         
-    def changeView(self, lon, lat, zoom):
+    def changeView(self, lon, lat, zoom, tileSetID=None):
         self.mapPos = (lon, lat)
         self.mapZoom = zoom
-        vs = self.size()
-        vw, vh = vs.width(), vs.height()
-        self.tilesource.loadTiles(lon=lon, lat=lat, zoom=zoom, w1=vw/2, w2=vw/2, h1=vh/2, h2=vh/2)
+        if tileSetID is None:
+            vs = self.size()
+            vw, vh = vs.width(), vs.height()
+            self.tilesource.loadTiles(lon=lon, lat=lat, zoom=zoom, w1=vw/2, w2=vw/2, h1=vh/2, h2=vh/2)
+        else:
+            self.tilesource.setActiveTileSet(tileSetID)
         self.redrawMap()
         
     def centerMap(self, coord, zoom):
         self.changeView(*coord, zoom)
         self.viewChanged.emit(*coord, zoom)
-    
+        
     def zoomIn(self):
         print("zoomIn()")
         self.mapZoom = min(self.mapZoom+1, self.MAX_ZOOM)
@@ -229,18 +235,78 @@ class qtWMSView(qtMapView):
         
 
           
-        
+class qtTileSourceThread(QThread):
+    def __init__(self, tilesource:TileSource):
+        QThread.__init__(self)
+        self.tilesource = tilesource
+    def run(self, *args, **kwargs):
+        return QThread.run(self, *args, **kwargs)  
+
+
+
+
+      
 class qtWmsMap(QWidget):
     
-    def __init__(self, tilesource:TileSource, initial=(10,50,10)):
+    def __init__(self, name, tilesource:TileSource, initial=(10,50,10)):
         QWidget.__init__(self)
+        self.name = name
         self.tilesource = tilesource
+        self.viewRequests = OrderedDict()
         self.view = qtWMSView(tilesource=self.tilesource, initial=initial)
         self.scene = QGraphicsScene()
         self.view.setScene(self.scene)
         layout = vbox_layout(self.view)
         self.setLayout(layout)
         self.view.update()
+        self.viewRequestsTimer = QTimer()
+        self.viewRequestsTimer.setInterval(500)
+        self.viewRequestsTimer.timeout.connect(self.controlViewRequests)
+        self.viewRequestsTimer.start()
+        
+    def getName(self):
+        return self.name
+    
+    def centerNext(self, coord, zoom, wait=0):
+        vs = self.view.size()
+        vw, vh = vs.width(), vs.height()
+        kwargs = dict(lon=coord[0], lat=coord[1], zoom=zoom, w1=vw/2, w2=vw/2, h1=vh/2, h2=vh/2)
+        requestID = self.tilesource.requestTiles(**kwargs, callback=self.handleTileSourceResponse)
+        print("%r.centerNext(): rquestID=%r" % (self.getName(), requestID))
+        self.viewRequests[requestID] = ViewRequest(coord, zoom, wait, requestID, None, 
+                                                   created=time.time(), displayed=None)
+                                     
+    def handleTileSourceResponse(self, requestID, tileSetID):
+        if requestID in self.viewRequests:
+            print("#1", tileSetID, self.viewRequests[requestID])
+            self.viewRequests[requestID].tileSetID = tileSetID
+        else:
+            print("handleTileSourceResponse(): requestID unknown")
+            
+    def controlViewRequests(self):
+        n_requests = len(list(self.viewRequests))
+        if n_requests == 0:
+            return
+        requestID = next(iter(self.viewRequests))
+        request = self.viewRequests[requestID]
+        if request.tileSetID is None:
+            if (time.time() - request.created) > request.timeout:
+                print("controlViewRequests(): remove:", requestID, ", remaining:", n_requests-1)
+                self.viewRequests.pop(requestID)
+                #self.controlViewRequests()
+        else:
+            if request.displayed is None:
+                print("controlViewRequests(): display:", requestID)
+                self.view.changeView(*request.coord, request.zoom, tileSetID=request.tileSetID)
+                request.displayed = time.time()
+            else:    
+                if (time.time() - request.displayed) > request.wait:
+                    print("controlViewRequests(): remove:", requestID, ", remaining:", n_requests-1)
+                    self.viewRequests.pop(requestID)
+                    #self.controlViewRequests()
+            
+    def resetViewRequests(self):
+        self.viewRequests = OrderedDict() 
     
 
 class qtTwinWmsMap(QWidget):
@@ -248,8 +314,8 @@ class qtTwinWmsMap(QWidget):
         QWidget.__init__(self)
         self.tileSource1 = tilesource1
         self.tileSource2 = tilesource2
-        self.wmsMap1 = qtWmsMap(tilesource=self.tileSource1, initial=initial)
-        self.wmsMap2 = qtWmsMap(tilesource=self.tileSource2, initial=initial)
+        self.wmsMap1 = qtWmsMap(name=tilesource1.getName(), tilesource=self.tileSource1, initial=initial)
+        self.wmsMap2 = qtWmsMap(name=tilesource2.getName(), tilesource=self.tileSource2, initial=initial)
         if mapsize:
             self.wmsMap1.setMaximumSize(*mapsize)
             self.wmsMap2.setMaximumSize(*mapsize)
@@ -269,7 +335,14 @@ class qtTwinWmsMap(QWidget):
 
     def centerMap(self, coord, zoom):
         self.wmsMap1.view.centerMap(coord, zoom)
-
+        
+    def centerNext(self, coord, zoom, wait):
+        self.wmsMap1.centerNext(coord, zoom, wait)
+        self.wmsMap2.centerNext(coord, zoom, wait)
+    
+    def resetViewRequests(self):
+        self.wmsMap1.resetViewRequests()
+        self.wmsMap2.resetViewRequests()
 # test
 
 def test():
